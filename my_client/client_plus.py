@@ -6,8 +6,9 @@ from GBN_SR import *
 
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 client_socket.bind(('', 8000))
-server_address = ('192.168.3.87', 8888)
-
+server_address = ('47.251.161.108', 8888)
+# server_address = ('10.223.78.176', 8888)
+# server_address = ('192.168.3.87', 8888)
 # Protocol configuration
 GBN_or_SR = 'SR'
 Packet_or_TO = 'P'
@@ -15,8 +16,8 @@ Packet_or_TO = 'P'
 n = 4
 to = 1
 temp = GBN_SR(win_size=n, max_size=512, files_dir=r'/home/jingkai/NET/',congestion_control=1)
-server_files = ['server_30K.txt', 'server_7M.txt', 'server_700K.png', 'server_200K.pdf', 'server_8M.mp4']
-client_files = ['bomb2.tar', 'examples.txt', 'client_12M.pdf']
+server_files = ['server_30K.txt', 'server_200K.pdf', 'server_700K.png','server_8M.mp4', 'server_4M.pdf', 'server_2M.pdf']
+client_files = ['bomb2.tar', 'client_30K.txt','client_200K.pdf', 'examples.txt', 'client_12M.pdf', 'client_400K.txt','client_700K.png']
 expectedseqnum = 0
 now_seqnum_send = 0
 now_seqnum_recv = 0
@@ -36,14 +37,34 @@ def download_file():
     filename = server_files[int(send_data) - 1]
     client_files.append(filename)
     Receive_File = open(filename, 'wb', buffering=0)
+    print(temp.packet_or_To)
     if GBN_or_SR == 'GBN':
-        client_socket.sendto(GBN_SR(seqnum=now_seqnum_send, gbn=1, sr=0, data=filename.encode()).to_packet(), server_address)
+        client_socket.sendto(GBN_SR(seqnum=now_seqnum_send, gbn=1, sr=0, packet_or_To=temp.packet_or_To, fin=2,data=filename.encode()).to_packet(), server_address)
     elif GBN_or_SR == 'SR':
-        client_socket.sendto(GBN_SR(seqnum=now_seqnum_send, gbn=0, sr=1, data=filename.encode()).to_packet(), server_address)
-
-    now_seqnum_send += 1
+        client_socket.sendto(GBN_SR(seqnum=now_seqnum_send, gbn=0, sr=1, packet_or_To=temp.packet_or_To, fin=2,data=filename.encode()).to_packet(), server_address)
+    
+    base_start = time.time()
+    base_end = 0
+    print('Waiting for server acknowledgment...')
+    client_socket.settimeout(2)  # Set timeout to 2 seconds, adjust as needed
+    try:
+        ack, addr = client_socket.recvfrom(1024)
+        ack_obj = Packet_to_Object(ack)
+        print(addr, ack_obj.ack)
+        if ack_obj.ack == 1:
+            base_end = time.time()
+            print('Received ACK for filename')
+        else:
+            print("No such file")
+            #return download_file()
+    except socket.timeout:
+        print('Timeout waiting for ACK of filename, resending...')
+        return download_file()  # Resend filename
+    
+    now_seqnum_send += 0
     # Initialization
     expectedseqnum = 0
+    baseseq = 0
     drop_flag = 0
     fin_num = -1
     flag = 0
@@ -70,12 +91,14 @@ def download_file():
                     Receive_File.write(packet_obj.data)
                 expectedseqnum += 1
             else:
+                if expectedseqnum > 0:
+                    client_socket.sendto(GBN_SR(seqnum=now_seqnum_send, acknum=expectedseqnum - 1, ack=1).to_packet(), server_address)
                 # Out of sequence, discard
                 print('Received wrong packet ', now_seqnum_recv, ', drop it!')
         elif GBN_or_SR == 'SR':
             if now_seqnum_recv >= expectedseqnum:
                 # In sequence, return ACK, write to file
-                print('Received expected packet ', now_seqnum_recv, ' ^_^')
+                print('Received expected packet ', now_seqnum_recv, ' ^_^', "expected packet: ", expectedseqnum)
                 client_socket.sendto(GBN_SR(seqnum=now_seqnum_send, acknum=now_seqnum_recv, gbn=0, sr=1, ack=1).to_packet(), server_address)
                 print('Sending ACK:', now_seqnum_recv)
                 if now_seqnum_recv == expectedseqnum:
@@ -98,10 +121,14 @@ def download_file():
                     sr_buffer.append(packet_obj.data)
                     if packet_obj.fin == 1:
                         fin_num = now_seqnum_recv
+            else:
+                print('Received expected packet ', now_seqnum_recv, ' ^_^')
+                client_socket.sendto(GBN_SR(seqnum=now_seqnum_send, acknum=now_seqnum_recv, gbn=0, sr=1, ack=1).to_packet(), server_address)
+                print('Sending ACK:', now_seqnum_recv)
     end = time.time()
     print('---------------------------------------------------')
     print('File %s downloaded successfully!' % filename)
-    print('With method:', GBN_or_SR)
+    print(f'With method:{GBN_or_SR} {Packet_or_TO} {temp.packet_or_To}')
     time_cost = (end - start) * 1000
     print('Transfer time: %.4f ms' % time_cost, end=', ')
     file_size = os.path.getsize(os.path.abspath(filename))
@@ -156,11 +183,13 @@ def upload_file():
     packet_send_times = {} 
     base_rtt = base_end - base_start
     min_rtt = float('inf')
+    alpha = 150
+    beta = 200
     # Send data packets
     if GBN_or_SR == 'GBN':
-        while True:
+        while True:   
             # Send when there is space in the window
-            while now_seqnum < base + temp.win_size and now_seqnum < len(packets):
+            while now_seqnum < base + temp.win_size and now_seqnum < len(packets) - 1:
                 if base == now_seqnum:
                     print("     setting time out...")
                     client_socket.settimeout(temp.to/1000)
@@ -171,7 +200,12 @@ def upload_file():
                 print(f'Sending packet:{now_seqnum}, window size:{temp.win_size}')
                 now_seqnum += 1
             # Receive ACK
-            
+            if base == len(packets) - 1:
+                packets[now_seqnum].set_seqnum(now_seqnum)
+                client_socket.sendto(packets[now_seqnum].to_packet(), server_address)
+                packet_send_times[now_seqnum] = time.time()
+                print(f'Sending packet:{now_seqnum}, window size:{temp.win_size}') 
+
             try:
                 ack, addr = client_socket.recvfrom(1024)
                 ack_obj = Packet_to_Object(ack)
@@ -182,13 +216,20 @@ def upload_file():
                     if ack in packet_send_times:
                         rtt = time.time() - packet_send_times[ack]
                         min_rtt = min(min_rtt, rtt)
+                        if rtt < base_rtt and rtt != 0:
+                            base_rtt = rtt
                         if base_rtt is None:
                             base_rtt = rtt
                         else:
                             if Packet_or_TO == 'T':
-                                if (1/rtt) < (1/base_rtt)*1.2:
+                                # if (1/rtt) < (1/base_rtt)*1.2:
+                                #     temp.win_size = max(temp.win_size - 1, 2)
+                                # elif (1/rtt) > (1/base_rtt)*0.8:
+                                #     temp.win_size = min(temp.win_size + 1, sthresh)
+                                #     temp.win_size = min(temp.win_size + 1, sthresh)
+                                if temp.win_size*(1/base_rtt - 1/rtt) > beta:
                                     temp.win_size = max(temp.win_size - 1, 2)
-                                elif (1/rtt) > (1/base_rtt)*0.8:
+                                elif temp.win_size*(1/base_rtt - 1/rtt) < alpha:
                                     temp.win_size = min(temp.win_size + 1, sthresh)
 
                     if base == ack + 1:
@@ -207,6 +248,7 @@ def upload_file():
                     if Packet_or_TO == 'P': #Congestion based on lose packet
                         if temp.win_size < sthresh: #slow start
                             temp.win_size += 1
+                            print("window size +1")
                         else:
                             count += 1
                             if count >= temp.win_size: 
@@ -223,7 +265,7 @@ def upload_file():
     else:
         ack_list = []
         while True:
-            while now_seqnum < base + temp.win_size and now_seqnum < len(packets):
+            while now_seqnum < base + temp.win_size and now_seqnum < len(packets) - 1:
                 if base == now_seqnum:
                     print("     reset time out...")
                     client_socket.settimeout(temp.to/1000)
@@ -234,7 +276,13 @@ def upload_file():
                     upload_size += packets[now_seqnum].get_len()
                     print(f'Sending packet:{now_seqnum}, window size:{temp.win_size}')
                 now_seqnum += 1
-            
+
+            if base == len(packets) - 1:
+                packets[now_seqnum].set_seqnum(now_seqnum)
+                client_socket.sendto(packets[now_seqnum].to_packet(), server_address)
+                packet_send_times[now_seqnum] = time.time() 
+                print(f'Sending packet:{now_seqnum}, window size:{temp.win_size}')
+
             try:
                 ack, addr = client_socket.recvfrom(1024)
                 ack_obj = Packet_to_Object(ack)
@@ -247,14 +295,21 @@ def upload_file():
                 if ack in packet_send_times:
                         rtt = time.time() - packet_send_times[ack]
                         min_rtt = min(min_rtt, rtt)
+                        if rtt < base_rtt and rtt != 0:
+                            base_rtt = rtt
                         if base_rtt is None:
                             base_rtt = rtt
                         else:
                             if Packet_or_TO == 'T':
                                 print("   1/rtt: ", 1/rtt)
-                                if (1/rtt) < (1/base_rtt)*0.8:
+                                # if (1/rtt) < (1/base_rtt)*0.8:
+                                #     temp.win_size = max(temp.win_size - 1, 2)
+                                # elif (1/rtt) > (1/base_rtt):
+                                #     temp.win_size = min(temp.win_size + 1, sthresh)
+                                #     temp.win_size = min(temp.win_size + 1, sthresh)
+                                if temp.win_size*(1/base_rtt - 1/rtt) > beta:
                                     temp.win_size = max(temp.win_size - 1, 2)
-                                elif (1/rtt) > (1/base_rtt):
+                                elif temp.win_size*(1/base_rtt - 1/rtt) < alpha:
                                     temp.win_size = min(temp.win_size + 1, sthresh)
 
                 if Packet_or_TO == 'P': #Congestion based on lose packet
@@ -297,8 +352,9 @@ if __name__ == '__main__':
         #n = int(input('Enter the window size N: '))
         # to = int(input('Enter the timeout TO (ms): '))
         temp.set_protocol(GBN_or_SR)
+        temp.set_congestion_protocol(Packet_or_TO)
         #temp.set_win(n)
-        temp.set_to(50)
+        temp.set_to(200)
         print('\n<Transfer type>')
         print('1. Download file')
         print('2. Upload file')

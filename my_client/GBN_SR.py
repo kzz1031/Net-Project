@@ -5,7 +5,7 @@ DBN_SR协议类定义
 import os
 class GBN_SR(object):
     def __init__(self, seqnum = 0, acknum = 0, win_size = 4, 
-                 gbn = 1, sr = 0, ack = 0, fin = 0, 
+                 gbn = 1, sr = 0, ack = 0, fin = 0, packet_or_To = 0, download_or_upload = 0,
                  len = 0, to = 1, data = b'',
                  max_size = 512, files_dir = r' ', congestion_control = 0
                  ):
@@ -14,6 +14,8 @@ class GBN_SR(object):
         self.win_size = win_size
         self.gbn = gbn
         self.sr = sr
+        self.packet_or_To = packet_or_To
+        self.download_or_upload = download_or_upload
         self.ack = ack
         self.fin = fin
         self.len = len
@@ -27,7 +29,7 @@ class GBN_SR(object):
         self.len = len(self.data)
         return (str(self.seqnum).zfill(8) + str(self.acknum).zfill(8) + str(self.win_size).zfill(3)
                  + str(self.gbn) + str(self.sr) + str(self.ack) + str(self.fin)
-                 + str(self.len).zfill(4) + str(self.to).zfill(3)).encode() + self.data
+                 + str(self.len).zfill(4) + str(self.to).zfill(3) + str(self.packet_or_To) ).encode() +self.data
     
     def set_seqnum(self, seqnum):
         self.seqnum = seqnum
@@ -39,7 +41,15 @@ class GBN_SR(object):
         elif choice == 'SR':
             self.gbn = 0
             self.sr = 1
-
+    def set_congestion_protocol(self, choice):
+        if choice == 'P':
+            self.packet_or_To = 0
+        elif choice == 'T':
+            self.packet_or_To = 1
+        else:
+            print("default congestion control: P")
+            self.packet_or_To = 0
+    
     def set_win(self, win):
         self.win_size = win
         
@@ -100,5 +110,7 @@ def Packet_to_Object(packet):
     obj.len = FixedLenStr_to_Int(num)
     num = packet[27:30].decode()
     obj.to = FixedLenStr_to_Int(num)
-    obj.data = packet[30: len(packet)]
+    num = packet[30:31].decode()
+    obj.packet_or_To = FixedLenStr_to_Int(num)
+    obj.data = packet[31: len(packet)]
     return obj
